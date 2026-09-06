@@ -22,7 +22,10 @@ const SUPPORTED_PHOTO_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', '
 
 type SelectedImage = { file: File; preview: string }
 
-const todayString = () => new Date().toISOString().slice(0, 10)
+const todayString = () => {
+    const today = new Date()
+    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+}
 
 const AddSnapPage: React.FC = () => {
     const navigate = useNavigate()

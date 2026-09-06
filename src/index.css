@@ -110,15 +110,6 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-html.chat-login-viewport,
-html.chat-login-viewport body,
-html.chat-login-viewport #root {
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  overscroll-behavior: none;
-}
-
 :where(
   input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']),
   select,

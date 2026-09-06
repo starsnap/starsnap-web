@@ -41,10 +41,8 @@ const LoginPage: React.FC<LoginPageProps> = ({ surface = 'social' }) => {
         if (!isChatSurface) return;
 
         const previousTitle = document.title;
-        document.documentElement.classList.add('chat-login-viewport');
         document.title = 'StarSnap Chat 로그인';
         return () => {
-            document.documentElement.classList.remove('chat-login-viewport');
             document.title = previousTitle;
         };
     }, [isChatSurface]);
@@ -93,8 +91,8 @@ const LoginPage: React.FC<LoginPageProps> = ({ surface = 'social' }) => {
 
     return (
         <div
-            className={`relative flex items-center justify-center overflow-hidden px-4 ${
-                isChatSurface ? 'h-[100svh] min-h-0 py-4 sm:py-10' : 'min-h-screen py-10'
+            className={`relative flex items-center justify-center px-4 ${
+                isChatSurface ? 'min-h-[100svh] py-4 sm:py-10' : 'min-h-screen overflow-hidden py-10'
             }`}
             style={{
                 background: 'radial-gradient(circle at 18% 14%, var(--ss-brand-soft) 0, transparent 30%), radial-gradient(circle at 86% 86%, var(--ss-border) 0, transparent 34%), var(--ss-canvas)',

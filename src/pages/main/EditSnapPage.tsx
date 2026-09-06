@@ -45,8 +45,6 @@ const EditSnapPage: React.FC = () => {
     const [starGroupQuery, setStarGroupQuery] = useState('')
     const [starResults, setStarResults] = useState<StarSearchItem[]>([])
     const [starGroupResults, setStarGroupResults] = useState<StarGroupSearchItem[]>([])
-    const [selectedStars, setSelectedStars] = useState<StarSearchItem[]>([])
-    const [selectedStarGroups, setSelectedStarGroups] = useState<StarGroupSearchItem[]>([])
     const [starModalOpen, setStarModalOpen] = useState(false)
     const [starGroupModalOpen, setStarGroupModalOpen] = useState(false)
     const [modalSelectedStars, setModalSelectedStars] = useState<StarSearchItem[]>([])
@@ -84,22 +82,12 @@ const EditSnapPage: React.FC = () => {
 
     const previewPhoto = useMemo(() => feedItem?.snapData.photos?.[0], [feedItem])
 
-    if (!feedItem || !state?.canEdit) {
-        return (
-            <div className="px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
-                <button
-                    onClick={() => navigate(-1)}
-                    className="flex items-center gap-1.5 text-sm text-sub hover:text-ink"
-                >
-                    <ChevronLeftIcon size={16} />
-                    뒤로가기
-                </button>
-                <div className="mt-24 text-center">
-                    <p className="text-sub text-sm">수정 가능한 스냅 정보가 없습니다.</p>
-                </div>
-            </div>
-        )
-    }
+    const [selectedStars, setSelectedStars] = useState<StarSearchItem[]>(() =>
+        allStarsQuery.map((id, index) => ({ id, name: `연결된 스타 ${index + 1}` })),
+    )
+    const [selectedStarGroups, setSelectedStarGroups] = useState<StarGroupSearchItem[]>(() =>
+        allStarGroupsQuery.map((id, index) => ({ id, name: `연결된 그룹 ${index + 1}` })),
+    )
 
     const addTag = () => {
         const value = tagInput.trim().replace(/^#/, '')
@@ -111,17 +99,21 @@ const EditSnapPage: React.FC = () => {
     const removeTag = (tag: string) => setTags((prev) => prev.filter((t) => t !== tag))
 
     useEffect(() => {
+        setSelectedStars(allStarsQuery.map((id, index) => ({ id, name: `연결된 스타 ${index + 1}` })))
+        if (allStarsQuery.length === 0) {
+            return
+        }
+
         let cancelled = false
 
         searchStars('', 0, 500)
             .then((items) => {
                 if (cancelled) return
-                if (allStarsQuery.length === 0) return
-                const selected = items.filter((item) => allStarsQuery.includes(item.id))
-                setSelectedStars(selected)
+                const byId = new Map(items.map((item) => [item.id, item]))
+                setSelectedStars((selected) => selected.map((item) => byId.get(item.id) ?? item))
             })
             .catch(() => {
-                if (!cancelled) setSelectedStars([])
+                // Keep the original IDs when display information cannot be loaded.
             })
 
         return () => {
@@ -130,17 +122,21 @@ const EditSnapPage: React.FC = () => {
     }, [allStarsQuery])
 
     useEffect(() => {
+        setSelectedStarGroups(allStarGroupsQuery.map((id, index) => ({ id, name: `연결된 그룹 ${index + 1}` })))
+        if (allStarGroupsQuery.length === 0) {
+            return
+        }
+
         let cancelled = false
 
         searchStarGroups('', 0, 500)
             .then((items) => {
                 if (cancelled) return
-                if (allStarGroupsQuery.length === 0) return
-                const selected = items.filter((item) => allStarGroupsQuery.includes(item.id))
-                setSelectedStarGroups(selected)
+                const byId = new Map(items.map((item) => [item.id, item]))
+                setSelectedStarGroups((selected) => selected.map((item) => byId.get(item.id) ?? item))
             })
             .catch(() => {
-                if (!cancelled) setSelectedStarGroups([])
+                // Keep the original IDs when display information cannot be loaded.
             })
 
         return () => {
@@ -232,6 +228,23 @@ const EditSnapPage: React.FC = () => {
         setSelectedStarGroups((prev) => prev.filter((item) => item.id !== groupId))
     }
 
+    if (!feedItem || !state?.canEdit) {
+        return (
+            <div className="px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
+                <button
+                    onClick={() => navigate(-1)}
+                    className="flex items-center gap-1.5 text-sm text-sub hover:text-ink"
+                >
+                    <ChevronLeftIcon size={16} />
+                    뒤로가기
+                </button>
+                <div className="mt-24 text-center">
+                    <p className="text-sub text-sm">수정 가능한 스냅 정보가 없습니다.</p>
+                </div>
+            </div>
+        )
+    }
+
     const handleSubmit = async () => {
         setErrorMessage('')
         if (!title.trim()) {
@@ -241,7 +254,7 @@ const EditSnapPage: React.FC = () => {
 
         setSubmitting(true)
         try {
-            await updateSnap({
+            const updatedSnap = await updateSnap({
                 snapId: feedItem.snapData.snapId,
                 title: title.trim(),
                 tags,
@@ -253,15 +266,7 @@ const EditSnapPage: React.FC = () => {
             navigate(`/snap/${feedItem.snapData.snapId}`, {
                 replace: true,
                 state: {
-                    feedItem: {
-                        ...feedItem,
-                        snapData: {
-                            ...feedItem.snapData,
-                            title: title.trim(),
-                            tags,
-                            commentState,
-                        },
-                    },
+                    feedItem: updatedSnap,
                     canEdit: true,
                 },
             })

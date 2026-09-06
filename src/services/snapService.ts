@@ -412,6 +412,9 @@ export async function updateSnap(request: UpdateSnapRequest): Promise<SnapFeedIt
     formData.append('snapId', request.snapId);
     formData.append('title', request.title);
     request.tags.forEach((tag) => formData.append('tags', tag));
+    // Spring field markers distinguish clearing a relation from an omitted update.
+    formData.append('_starIds', 'on');
+    formData.append('_starGroupIds', 'on');
     request.starIds.forEach((id) => formData.append('starIds', id));
     request.starGroupIds.forEach((id) => formData.append('starGroupIds', id));
     formData.append('commentState', String(request.commentState));

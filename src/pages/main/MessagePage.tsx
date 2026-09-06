@@ -18,6 +18,7 @@ import {
 } from '../../services/snapService'
 import { applyNextImageCandidate, getImageCandidates } from '../../utils/s3Image'
 import { useAccessibleDialog } from '../../hooks/useAccessibleDialog'
+import { loadChatHistory, mergeChatHistory, type ChatMessageChange } from '../../services/chat/chatHistory'
 import {
     addChatRoomMembers,
     createChatRoom,
@@ -190,7 +191,12 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
     const targetUsername = (searchParams.get('user') || '').trim()
     const [keyword, setKeyword] = useState('')
     const [selectedRoom, setSelectedRoom] = useState<ChatRoomSummary | null>(null)
-    const [messages, setMessages] = useState<ChatMessage[]>([])
+    const [messages, setMessagesState] = useState<ChatMessage[]>([])
+    const messagesRef = useRef<ChatMessage[]>([])
+    const setMessages = (next: React.SetStateAction<ChatMessage[]>) => {
+        messagesRef.current = typeof next === 'function' ? next(messagesRef.current) : next
+        setMessagesState(messagesRef.current)
+    }
     const [input, setInput] = useState('')
     const [chatError, setChatError] = useState<string | null>(null)
     const [rateLimitDeadline, setRateLimitDeadline] = useState(0)
@@ -230,6 +236,11 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
     const conversationSearchRef = useRef<HTMLInputElement | null>(null)
     const contextMenuRef = useRef<HTMLDivElement | null>(null)
     const historyCursorRef = useRef<string | null>(null)
+    const historyGenerationRef = useRef(0)
+    const historyRequestActiveRef = useRef(false)
+    const hasLoadedHistoryRef = useRef(false)
+    const messageChangeVersionRef = useRef(0)
+    const messageChangesRef = useRef(new Map<string, { version: number; change: ChatMessageChange }>())
     const isLoadingOlderMessagesRef = useRef(false)
     const shouldAutoScrollRef = useRef(true)
     const localTypingRef = useRef<{ roomId: string } | null>(null)
@@ -297,6 +308,10 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
         if (room) standaloneRoomListRequestedRef.current = false
         const roomChanged = selectedRoomRef.current?.roomId !== room?.roomId
         if (roomChanged) {
+            historyGenerationRef.current += 1
+            historyRequestActiveRef.current = false
+            hasLoadedHistoryRef.current = false
+            messageChangesRef.current.clear()
             shouldAutoScrollRef.current = true
             historyCursorRef.current = null
             isLoadingOlderMessagesRef.current = false
@@ -306,6 +321,47 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
         }
         selectedRoomRef.current = room
         setSelectedRoom(room)
+    }
+
+    const applyMessageChange = (change: ChatMessageChange) => {
+        messageChangesRef.current.set(change.id, { version: ++messageChangeVersionRef.current, change })
+        setMessages((current) => mergeChatHistory(change.createdAt ? [change as ChatMessage] : [], current, [change]))
+    }
+
+    const refreshHistory = async () => {
+        const roomId = selectedRoomRef.current?.roomId
+        if (!roomId) return
+        const generation = ++historyGenerationRef.current
+        const changeVersion = hasLoadedHistoryRef.current ? messageChangeVersionRef.current : 0
+        const oldestKnownId = messagesRef.current[0]?.id
+        const isCurrent = () => generation === historyGenerationRef.current && selectedRoomRef.current?.roomId === roomId
+        historyRequestActiveRef.current = true
+        isLoadingOlderMessagesRef.current = false
+        setOlderMessagesLoading(false)
+        setHistoryLoading(messagesRef.current.length === 0)
+        try {
+            const page = await loadChatHistory(
+                (beforeMessageId) => getChatHistory(roomId, beforeMessageId),
+                oldestKnownId,
+                isCurrent,
+            )
+            if (!page) return
+            const changes = [...messageChangesRef.current.values()]
+                .filter(({ version }) => version > changeVersion)
+                .map(({ change }) => change)
+            setMessages((current) => mergeChatHistory(page.messages, current, changes))
+            hasLoadedHistoryRef.current = true
+            historyCursorRef.current = page.hasMore ? page.messages[0]?.id ?? null : null
+            setChatError((error) => error === '메시지를 불러오지 못했어요.' ? null : error)
+        } catch (error) {
+            console.error('[chat] 이력 조회 실패', error)
+            if (isCurrent()) setChatError('메시지를 불러오지 못했어요.')
+        } finally {
+            if (isCurrent()) {
+                historyRequestActiveRef.current = false
+                setHistoryLoading(false)
+            }
+        }
     }
 
     const queueRejectedSendDraft = (draft: PendingSendDraft) => {
@@ -670,6 +726,7 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
             nextSocket.onopen = () => {
                 reconnectAttempt = 0
                 void roomsRefetchRef.current()
+                void refreshHistory()
             }
 
             nextSocket.onmessage = (event) => {
@@ -711,7 +768,7 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
                             return
                         }
                         const updated = frame.message
-                        setMessages((prev) => prev.map((item) => item.id === updated.id ? updated : item))
+                        applyMessageChange(updated)
                         void roomsRefetchRef.current()
                         return
                     }
@@ -721,11 +778,7 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
                             void roomsRefetchRef.current()
                             return
                         }
-                        setMessages((prev) => prev.map((item) => (
-                            item.id === frame.messageId
-                                ? { ...item, status: frame.status, content: '' }
-                                : item
-                        )))
+                        applyMessageChange({ id: frame.messageId, status: frame.status, content: '' })
                         void roomsRefetchRef.current()
                         return
                     }
@@ -747,11 +800,7 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
                         void roomsRefetchRef.current()
                         return
                     }
-                    setMessages((prev) => {
-                        const exists = prev.some((item) => item.id === message.id)
-                        if (exists) return prev
-                        return [...prev, message]
-                    })
+                    applyMessageChange(message)
                     if (message.senderUserId !== myUserIdRef.current) {
                         const preview = message.content.length > 120
                             ? `${message.content.slice(0, 120)}…`
@@ -819,43 +868,19 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
     }, [roomContextMenu])
 
     useEffect(() => {
-        if (!selectedRoom) {
-            historyCursorRef.current = null
-            setMessages([])
-            setHistoryLoading(false)
-            return
-        }
-        let mounted = true
-        historyCursorRef.current = null
-        setMessages([])
-        setHistoryLoading(true)
-
-        const loadHistory = async () => {
-            if (!selectedRoom.roomId) return
-            try {
-                const page = await getChatHistory(selectedRoom.roomId)
-                if (!mounted) return
-
-                setMessages(page.messages)
-                historyCursorRef.current = page.hasMore ? page.messages[0]?.id ?? null : null
-            } catch (error) {
-                console.error('[chat] 이력 조회 실패', error)
-                if (mounted) setChatError('메시지를 불러오지 못했어요.')
-            } finally {
-                if (mounted) setHistoryLoading(false)
-            }
-        }
-
-        void loadHistory()
+        void refreshHistory()
         return () => {
-            mounted = false
+            historyGenerationRef.current += 1
         }
     }, [selectedRoom?.roomId])
 
     const loadOlderMessages = async () => {
         const room = selectedRoomRef.current
         const beforeMessageId = historyCursorRef.current
-        if (!room || !beforeMessageId || isLoadingOlderMessagesRef.current) return
+        if (!room || !beforeMessageId || isLoadingOlderMessagesRef.current || historyRequestActiveRef.current) return
+        const generation = historyGenerationRef.current
+        const changeVersion = messageChangeVersionRef.current
+        const isCurrent = () => generation === historyGenerationRef.current && selectedRoomRef.current?.roomId === room.roomId
 
         isLoadingOlderMessagesRef.current = true
         setOlderMessagesLoading(true)
@@ -865,24 +890,26 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
 
         try {
             const page = await getChatHistory(room.roomId, beforeMessageId)
-            if (selectedRoomRef.current?.roomId !== room.roomId) return
+            if (!isCurrent()) return
 
-            setMessages((current) => {
-                const currentMessageIds = new Set(current.map((message) => message.id))
-                return [...page.messages.filter((message) => !currentMessageIds.has(message.id)), ...current]
-            })
+            const changes = [...messageChangesRef.current.values()]
+                .filter(({ version }) => version > changeVersion)
+                .map(({ change }) => change)
+            setMessages((current) => mergeChatHistory(page.messages, current, changes))
             historyCursorRef.current = page.hasMore ? page.messages[0]?.id ?? null : null
 
             window.requestAnimationFrame(() => {
-                if (!scrollContainer) return
+                if (!scrollContainer || !isCurrent()) return
                 scrollContainer.scrollTop = previousScrollTop + scrollContainer.scrollHeight - previousScrollHeight
             })
         } catch (error) {
             console.error('[chat] 이전 이력 조회 실패', error)
-            setChatError('이전 메시지를 불러오지 못했어요.')
+            if (isCurrent()) setChatError('이전 메시지를 불러오지 못했어요.')
         } finally {
-            isLoadingOlderMessagesRef.current = false
-            setOlderMessagesLoading(false)
+            if (isCurrent()) {
+                isLoadingOlderMessagesRef.current = false
+                setOlderMessagesLoading(false)
+            }
         }
     }
 
@@ -1054,7 +1081,7 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
         setChatError(null)
         try {
             const updated = await updateChatMessage(message.id, { content: nextText })
-            setMessages((prev) => prev.map((item) => item.id === updated.id ? updated : item))
+            if (selectedRoomRef.current?.roomId === updated.roomId) applyMessageChange(updated)
             setEditingMessage(null)
             await roomsQuery.refetch()
         } catch (e) {
@@ -1073,11 +1100,9 @@ const MessagePage: React.FC<MessagePageProps> = ({ standalone = false }) => {
         setChatError(null)
         try {
             await deleteChatMessage(message.id)
-            setMessages((prev) => prev.map((item) => (
-                item.id === message.id
-                    ? { ...item, status: 'DELETED', content: '' }
-                    : item
-            )))
+            if (selectedRoomRef.current?.roomId === message.roomId) {
+                applyMessageChange({ id: message.id, status: 'DELETED', content: '' })
+            }
             setDeleteTarget(null)
             await roomsQuery.refetch()
         } catch (e) {
